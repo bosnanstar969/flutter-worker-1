@@ -1,0 +1,119 @@
+name: Flutter Auto Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Nama Aplikasi'
+        required: true
+      package_name:
+        description: 'Package Name (com.example.app)'
+        required: true
+      source_type:
+        description: 'Tipe Source (zip/url)'
+        required: true
+      source_url:
+        description: 'Link Download ZIP atau URL Web'
+        required: true
+      user_id:
+        description: 'ID Telegram User'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # 1. SETUP FLUTTER
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+
+      # 2. JIKA BUILD DARI ZIP
+      - name: Download and Extract ZIP
+        if: github.event.inputs.source_type == 'zip'
+        run: |
+          curl -L -o project.zip "${{ github.event.inputs.source_url }}"
+          unzip project.zip -d project_folder
+          
+      # 3. JIKA BUILD DARI URL (WEB TO APK)
+      - name: Create WebView Project
+        if: github.event.inputs.source_type == 'url'
+        run: |
+          flutter create --org com.botbuild --project-name webview_app project_folder
+          cd project_folder
+          flutter pub add webview_flutter
+          
+          # Timpa file main.dart dengan WebView
+          cat << 'EOF' > lib/main.dart
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+
+          void main() {
+            runApp(const MyApp());
+          }
+
+          class MyApp extends StatelessWidget {
+            const MyApp({super.key});
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                home: const WebViewScreen(),
+              );
+            }
+          }
+
+          class WebViewScreen extends StatefulWidget {
+            const WebViewScreen({super.key});
+            @override
+            State<WebViewScreen> createState() => _WebViewScreenState();
+          }
+
+          class _WebViewScreenState extends State<WebViewScreen> {
+            late final WebViewController controller;
+            @override
+            void initState() {
+              super.initState();
+              controller = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..loadRequest(Uri.parse('${{ github.event.inputs.source_url }}'));
+            }
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                body: SafeArea(child: WebViewWidget(controller: controller)),
+              );
+            }
+          }
+          EOF
+
+      # 4. BUILD APK
+      - name: Build APK
+        run: |
+          cd project_folder
+          flutter pub get
+          flutter build apk --release
+
+      # 5. KIRIM BALIK KE BOT TELEGRAM
+      - name: Send APK to Telegram
+        run: |
+          # Menggunakan API Telegram untuk mengirim dokumen
+          BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          CHAT_ID="${{ github.event.inputs.user_id }}"
+          APK_FILE="project_folder/build/app/outputs/flutter-apk/app-release.apk"
+          APP_NAME="${{ github.event.inputs.app_name }}"
+          
+          curl -F document=@"$APK_FILE" \
+               -F caption="✅ Build Selesai: $APP_NAME" \
+               "https://api.telegram.org/bot$BOT_TOKEN/sendDocument?chat_id=$CHAT_ID"
